@@ -1,0 +1,4 @@
+{
+  "name": "E-com to Shopify CSV Converter",
+  "description": "A client-side tool to convert WooCommerce, Wix, and PrestaShop product exports into Shopify-compatible CSV files."
+}
