@@ -97,48 +97,23 @@ export const detectFormat = (data: SourceRow[]): SourceFormat => {
   
   const headers = Object.keys(data[0]);
   const lowerHeaders = headers.map(h => h.toLowerCase());
-  
-  console.log('=== FORMAT DETECTION ===');
-  console.log('First 10 headers:', headers.slice(0, 10));
 
   // WooCommerce Detection
-  if (lowerHeaders.includes('genitore') || lowerHeaders.includes('prezzo di listino')) {
-    console.log('Detected: WOOCOMMERCE');
-    return SourceFormat.WOOCOMMERCE;
-  }
-  if (lowerHeaders.includes('parent') && lowerHeaders.includes('regular price')) {
-    console.log('Detected: WOOCOMMERCE');
-    return SourceFormat.WOOCOMMERCE;
-  }
-  if (lowerHeaders.includes('id') && lowerHeaders.some(h => h.includes('attributo'))) {
-    console.log('Detected: WOOCOMMERCE');
-    return SourceFormat.WOOCOMMERCE;
-  }
+  if (lowerHeaders.includes('genitore') || lowerHeaders.includes('prezzo di listino')) return SourceFormat.WOOCOMMERCE;
+  if (lowerHeaders.includes('parent') && lowerHeaders.includes('regular price')) return SourceFormat.WOOCOMMERCE;
+  if (lowerHeaders.includes('id') && lowerHeaders.some(h => h.includes('attributo'))) return SourceFormat.WOOCOMMERCE;
 
   // Wix Detection - supports multiple export formats
   // Format 1: handle + fieldType + media (original/legacy format)
-  if (lowerHeaders.includes('handle') && lowerHeaders.includes('fieldtype')) {
-    console.log('Detected: WIX (original format)');
-    return SourceFormat.WIX;
-  }
+  if (lowerHeaders.includes('handle') && lowerHeaders.includes('fieldtype')) return SourceFormat.WIX;
   // Format 2: URL handle + Type + Product image URL (newer format)
-  if (lowerHeaders.includes('url handle') && lowerHeaders.includes('type')) {
-    console.log('Detected: WIX (new format)');
-    return SourceFormat.WIX;
-  }
+  if (lowerHeaders.includes('url handle') && lowerHeaders.includes('type')) return SourceFormat.WIX;
   // Format 3: By specific Wix columns
-  if (lowerHeaders.includes('handleid') || (lowerHeaders.includes('product image url') && lowerHeaders.includes('productoption'))) {
-    console.log('Detected: WIX (by specific columns)');
-    return SourceFormat.WIX;
-  }
+  if (lowerHeaders.includes('handleid') || (lowerHeaders.includes('product image url') && lowerHeaders.includes('productoption'))) return SourceFormat.WIX;
 
   // PrestaShop Detection
-  if (lowerHeaders.includes('price tax excluded') || (lowerHeaders.includes('active') && lowerHeaders.includes('quantity'))) {
-    console.log('Detected: PRESTASHOP');
-    return SourceFormat.PRESTASHOP;
-  }
+  if (lowerHeaders.includes('price tax excluded') || (lowerHeaders.includes('active') && lowerHeaders.includes('quantity'))) return SourceFormat.PRESTASHOP;
 
-  console.log('Detected: UNKNOWN');
   return SourceFormat.UNKNOWN;
 };
 
@@ -252,11 +227,16 @@ const mapWooCommerce = (data: SourceRow[]): { rows: ShopifyRow[], stats: Convers
           newRow.Published = isPub ? 'TRUE' : 'FALSE';
           newRow.Status = isPub ? 'active' : 'draft';
       } else {
-          // Child/Variant Data
-          // Variants generally don't need Title/Body/Tags in Shopify CSV if Handle matches parent
-          // But we must ensure Published is set if we want it active
-          newRow.Published = 'TRUE'; 
-          newRow.Status = 'active';
+          // Child/Variant Data - MUST leave Published/Status EMPTY for variants
+          // Shopify only reads these from the first row (parent)
+          newRow.Title = '';
+          newRow['Body (HTML)'] = '';
+          newRow.Vendor = '';
+          newRow.Type = '';
+          newRow.Tags = '';
+          newRow.Published = '';
+          newRow.Status = '';
+          newRow['Product Category'] = '';
       }
 
       // --- VARIANT SPECIFIC DATA ---
@@ -290,41 +270,40 @@ const mapWooCommerce = (data: SourceRow[]): { rows: ShopifyRow[], stats: Convers
       }
 
       // --- OPTIONS / ATTRIBUTES ---
-      // Map up to 3 options. In WooCommerce CSVs, these are often "Nome dell'attributo X" and "Valore dell'attributo X"
+      // Map up to 3 options ONLY for variable products and their variations
+      // Simple products without variations should NOT have options
       let optionIndex = 1;
       
-      // Try to find up to 3 attributes
-      // We loop blindly because sometimes they are "Attribute 1 name" or "Nome dell'attributo 1"
-      for (let i = 1; i <= 10; i++) { // Scan up to 10 slots, pick first 3 valid ones
-          if (optionIndex > 3) break;
+      // Only process options if this is a variable product OR a variation
+      const shouldHaveOptions = type.includes('variable') || type.includes('variation') || type.includes('variazione');
+      
+      if (shouldHaveOptions) {
+          // Try to find up to 3 attributes
+          // We loop blindly because sometimes they are "Attribute 1 name" or "Nome dell'attributo 1"
+          for (let i = 1; i <= 10; i++) { // Scan up to 10 slots, pick first 3 valid ones
+              if (optionIndex > 3) break;
 
-          const nameKey = [`Attribute ${i} name`, `Nome dell'attributo ${i}`];
-          const valKey = [`Attribute ${i} value(s)`, `Valore dell'attributo ${i}`];
-          const visibleKey = [`Attribute ${i} visible`, `Attributo ${i} visibile`]; // Optional check
+              const nameKey = [`Attribute ${i} name`, `Nome dell'attributo ${i}`];
+              const valKey = [`Attribute ${i} value(s)`, `Valore dell'attributo ${i}`];
+              const visibleKey = [`Attribute ${i} visible`, `Attributo ${i} visibile`]; // Optional check
 
-          const optName = getVal(row, nameKey);
-          const optVal = getVal(row, valKey);
+              const optName = getVal(row, nameKey);
+              const optVal = getVal(row, valKey);
 
-          if (optName && optVal) {
-              // Valid attribute found
-              if (isParent) {
-                  // Parent row defines Option Names
-                  newRow[`Option${optionIndex} Name` as keyof ShopifyRow] = optName;
-                  // If it's a simple product, it might have a single value. 
-                  // If variable, Parent row usually lists ALL values separated by comma.
-                  // Shopify Parent row Option Value can be "Default Title" or the first value, or blank.
-                  // We leave it blank for Variable Parents so variants define it.
-                  if (type.includes('simple')) {
-                       newRow[`Option${optionIndex} Value` as keyof ShopifyRow] = optVal.split(',')[0].trim();
+              if (optName && optVal) {
+                  // Valid attribute found
+                  if (isParent) {
+                      // Parent row defines Option Names
+                      newRow[`Option${optionIndex} Name` as keyof ShopifyRow] = optName;
+                      // Variable parent: leave value empty so variants can define their own values
+                      newRow[`Option${optionIndex} Value` as keyof ShopifyRow] = ''; 
                   } else {
-                       newRow[`Option${optionIndex} Value` as keyof ShopifyRow] = ''; 
+                      // Child row (variation)
+                      newRow[`Option${optionIndex} Name` as keyof ShopifyRow] = optName;
+                      newRow[`Option${optionIndex} Value` as keyof ShopifyRow] = optVal;
                   }
-              } else {
-                  // Child row
-                  newRow[`Option${optionIndex} Name` as keyof ShopifyRow] = optName;
-                  newRow[`Option${optionIndex} Value` as keyof ShopifyRow] = optVal;
+                  optionIndex++;
               }
-              optionIndex++;
           }
       }
 
@@ -449,19 +428,6 @@ const mapWix = (data: SourceRow[]): { rows: ShopifyRow[], stats: ConversionStats
 
   const totalProducts = Object.keys(groups).length;
   let totalVariants = 0;
-
-  // Debug info
-  console.log('=== WIX CONVERSION DEBUG ===');
-  console.log('Total input rows:', data.length);
-  console.log('Total groups (unique handles):', totalProducts);
-  
-  // Count row types
-  const typeCounts: Record<string, number> = {};
-  data.forEach(row => {
-    const type = cleanText(row['Type'] || row['fieldType']).toUpperCase() || 'EMPTY';
-    typeCounts[type] = (typeCounts[type] || 0) + 1;
-  });
-  console.log('Row types:', typeCounts);
   
   console.log('Sample groups:', Object.keys(groups).slice(0, 3).map(h => ({
     handle: h,
@@ -624,11 +590,6 @@ const mapWix = (data: SourceRow[]): { rows: ShopifyRow[], stats: ConversionStats
       }
   }
 
-  console.log('=== OUTPUT ===');
-  console.log('Total Shopify rows generated:', shopifyRows.length);
-  console.log('Total unique products:', totalProducts);
-  console.log('Total variants:', totalVariants);
-  
   return { rows: shopifyRows, stats: { totalProducts, totalVariants, warnings } };
 };
 
